@@ -1,230 +1,175 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Papa from 'papaparse';
 
-type Row = {
-  planta: string;
-  os: string;
-  descripcion: string;
+type StatusRow = {
+  Planta?: string;
+  'N° Documento O/S'?: string;    // ajusta el nombre EXACTO de la columna
+  'N° Documento (O/S)'?: string;  // deja las dos por si cambia el título
+  'Descripción O/S'?: string;
 };
 
-function normalize(value: string) {
-  return value.trim();
-}
-
 export default function UploadPage() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [filter, setFilter] = useState('');
-  const [csvName, setCsvName] = useState('status_os.csv');
-  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState<StatusRow[]>([]);
+  const [searchOs, setSearchOs] = useState('');
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Cargar siempre el CSV base desde /public/status_os.csv
+  // 1) Cargar CSV automáticamente desde nuestra API (que a su vez va a OneDrive)
   useEffect(() => {
-    loadFromPublic();
-  }, []);
-
-  async function loadFromPublic() {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/status_os.csv', { cache: 'no-store' });
-      if (!res.ok) throw new Error('No se pudo leer status_os.csv');
-      const text = await res.text();
-      const parsed = parseCsv(text);
-      setRows(parsed);
-      setCsvName('status_os.csv');
-    } catch (e: any) {
-      setError(e.message ?? 'Error al cargar CSV');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Lee el CSV y toma:
-  //  - Columna A = Planta
-  //  - Columna B = N° Documento (O/S)
-  //  - Columna D = Descripción O/S
-  function parseCsv(text: string): Row[] {
-    const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
-    if (lines.length < 2) return [];
-
-    const sep =
-      lines[0].split(';').length > 1
-        ? ';'
-        : lines[0].split(',').length > 1
-        ? ','
-        : '\t';
-
-    return lines
-      .slice(1)
-      .map((line) => {
-        const cols = line.split(sep);
-        const planta = cols[0] ?? '';
-        const os = cols[1] ?? '';
-        const descripcion = cols[3] ?? ''; // col D
-        return {
-          planta: normalize(planta),
-          os: normalize(os),
-          descripcion: normalize(descripcion),
-        };
-      })
-      .filter((r) => r.os !== '');
-  }
-
-  // Permitir cambiar el CSV desde la pantalla (opcional)
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
+    const loadCsv = async () => {
       try {
-        const text = String(ev.target?.result ?? '');
-        const parsed = parseCsv(text);
-        setRows(parsed);
-        setCsvName(file.name);
+        setLoading(true);
+        setError(null);
+
+        const res = await fetch('/api/status-os');
+        if (!res.ok) {
+          throw new Error('No se pudo descargar el CSV desde la API');
+        }
+
+        const text = await res.text();
+
+        const parsed = Papa.parse<StatusRow>(text, {
+          header: true,
+          skipEmptyLines: true,
+        });
+
+        if (parsed.errors.length > 0) {
+          console.warn('Errores al parsear CSV:', parsed.errors);
+        }
+
+        setRows(parsed.data);
       } catch (err: any) {
-        setError('No se pudo leer el archivo');
+        console.error(err);
+        setError(err.message || 'Error al cargar datos');
       } finally {
         setLoading(false);
       }
     };
-    reader.readAsText(file, 'utf-8');
-  }
 
-  const filtered = useMemo(
-    () =>
-      rows.filter((r) =>
-        filter.trim() === ''
-          ? true
-          : r.os.toLowerCase().includes(filter.trim().toLowerCase())
-      ),
-    [rows, filter]
-  );
+    loadCsv();
+  }, []);
+
+  // 2) Filtrar por número de O/S (columna B)
+  const filteredRows = useMemo(() => {
+    if (!searchOs.trim()) return rows;
+
+    const query = searchOs.trim().toLowerCase();
+
+    return rows.filter((row) => {
+      const osNumber =
+        row['N° Documento (O/S)'] ??
+        row['N° Documento O/S'] ??
+        '';
+
+      return String(osNumber).toLowerCase().includes(query);
+    });
+  }, [rows, searchOs]);
 
   return (
-    <div className="min-h-screen bg-[#00152A] text-[#E5F0FF] flex items-start justify-center py-10 px-3 sm:px-6">
-      <div className="w-full max-w-5xl bg-[#021932] border border-[#123456] shadow-[0_0_0_1px_rgba(255,255,255,0.02)] rounded-xl overflow-hidden">
-        {/* Barra superior estilo SAP */}
-        <div className="bg-gradient-to-r from-[#062A4D] to-[#014A7F] px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg sm:text-xl font-semibold tracking-wide">
-              Consulta Status O/S
-            </h1>
-            <p className="text-xs sm:text-sm text-[#B2C8E6]">
-              Fuente: {csvName} · Columnas Planta / N° Documento (O/S) / Descripción O/S
-            </p>
-          </div>
-          <button
-            onClick={loadFromPublic}
-            className="hidden sm:inline-flex text-xs items-center gap-2 px-3 py-1.5 rounded-md border border-[#71C2FF] text-[#D9F2FF] hover:bg-[#0B355C] transition"
-          >
-            Recargar CSV base
-          </button>
-        </div>
+    <main className="min-h-screen bg-slate-900 text-slate-50 flex flex-col items-center px-4 py-8">
+      <div className="w-full max-w-6xl">
+        {/* Título estilo SAP simple */}
+        <header className="mb-6 border-b border-slate-700 pb-4">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Carga de Status O/S (CSV) – Vista KMC
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Datos tomados automáticamente desde OneDrive (archivo{' '}
+            <code>status_os.csv</code>).
+          </p>
+        </header>
 
-        {/* Toolbar */}
-        <div className="border-b border-[#123456] bg-[#031C3B] px-4 sm:px-6 py-3 flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-          <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-            <label className="text-[11px] uppercase tracking-wide text-[#9EB4D6]">
-              Buscar O/S (columna B)
-            </label>
-            <input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Ej: 6251726"
-              className="bg-[#020C1A] border border-[#22426D] rounded-md px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-[#35B3FF] focus:border-[#35B3FF] min-w-[180px]"
-            />
-          </div>
+        {/* Buscador */}
+        <section className="mb-4">
+          <label className="block text-sm font-medium text-slate-200 mb-1">
+            Buscar O/S (columna B)
+          </label>
+          <input
+            type="text"
+            value={searchOs}
+            onChange={(e) => setSearchOs(e.target.value)}
+            placeholder="Ej: 6251726"
+            className="w-full max-w-md rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500"
+          />
+          <p className="mt-1 text-xs text-slate-400">
+            Se filtra por el número de documento O/S (columna B del Excel).
+          </p>
+        </section>
 
-          <div className="flex items-center gap-2">
-            <label className="text-[11px] uppercase tracking-wide text-[#9EB4D6] hidden sm:block">
-              Cambiar archivo CSV
-            </label>
-            <label className="inline-flex cursor-pointer items-center px-3 py-1.5 rounded-md bg-[#0B2C4A] border border-[#20466F] text-xs hover:bg-[#12385A]">
-              Seleccionar archivo...
-              <input
-                type="file"
-                accept=".csv"
-                onChange={handleFileChange}
-                className="hidden"
-              />
-            </label>
+        {/* Estados */}
+        {loading && (
+          <div className="mt-6 text-sm text-slate-300">
+            Cargando datos desde OneDrive…
           </div>
-        </div>
+        )}
 
-        {/* Contenido */}
-        <div className="px-4 sm:px-6 py-4 bg-[#00152A]">
-          {error && (
-            <div className="mb-3 rounded-md border border-red-500/70 bg-red-900/30 text-xs sm:text-sm px-3 py-2">
-              {error}
+        {error && !loading && (
+          <div className="mt-4 rounded border border-red-500 bg-red-900/20 px-3 py-2 text-sm text-red-200">
+            {error}
+          </div>
+        )}
+
+        {/* Tabla de resultados estilo SAP sencillo */}
+        {!loading && !error && (
+          <section className="mt-4 border border-slate-700 rounded-md overflow-hidden">
+            <div className="bg-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300">
+              Resultados ({filteredRows.length.toLocaleString('es-CL')} filas)
             </div>
-          )}
-
-          {loading && (
-            <div className="mb-3 text-xs sm:text-sm text-[#B2C8E6]">
-              Cargando datos, por favor espere...
-            </div>
-          )}
-
-          {/* Tabla */}
-          <div className="border border-[#163555] rounded-lg overflow-auto max-h-[60vh] bg-[#020F23]">
-            <table className="min-w-full text-xs sm:text-sm">
-              <thead className="bg-[#052448] text-[#E5F0FF] sticky top-0 z-10">
-                <tr>
-                  <th className="px-3 py-2 text-left font-semibold border-b border-[#163555] w-20">
-                    Planta
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold border-b border-[#163555] w-40">
-                    N° Documento (O/S)
-                  </th>
-                  <th className="px-3 py-2 text-left font-semibold border-b border-[#163555]">
-                    Descripción O/S
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.length === 0 ? (
+            <div className="max-h-[70vh] overflow-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-800 sticky top-0 z-10">
                   <tr>
-                    <td
-                      className="px-3 py-4 text-center text-[#9EB4D6]"
-                      colSpan={3}
-                    >
-                      {rows.length === 0
-                        ? 'No se han cargado datos desde el CSV.'
-                        : 'No hay resultados para ese número de O/S.'}
-                    </td>
+                    <th className="px-3 py-2 text-left border-b border-slate-700">
+                      Planta
+                    </th>
+                    <th className="px-3 py-2 text-left border-b border-slate-700">
+                      N° Documento O/S
+                    </th>
+                    <th className="px-3 py-2 text-left border-b border-slate-700">
+                      Descripción O/S
+                    </th>
                   </tr>
-                ) : (
-                  filtered.map((row, idx) => (
-                    <tr
-                      key={`${row.planta}-${row.os}-${idx}`}
-                      className={idx % 2 === 0 ? 'bg-[#020F23]' : 'bg-[#03182E]'}
-                    >
-                      <td className="px-3 py-2 border-b border-[#102743] whitespace-nowrap">
-                        {row.planta}
-                      </td>
-                      <td className="px-3 py-2 border-b border-[#102743] whitespace-nowrap font-medium text-[#C1E0FF]">
-                        {row.os}
-                      </td>
-                      <td className="px-3 py-2 border-b border-[#102743]">
-                        {row.descripcion}
+                </thead>
+                <tbody>
+                  {filteredRows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={3}
+                        className="px-3 py-4 text-center text-slate-400"
+                      >
+                        No hay resultados o la O/S no existe.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="mt-2 text-[10px] sm:text-xs text-[#6E84A8] flex justify-between">
-            <span>Registros totales: {rows.length}</span>
-            <span>Mostrando: {filtered.length}</span>
-          </div>
-        </div>
+                  ) : (
+                    filteredRows.map((row, idx) => (
+                      <tr
+                        key={`${row.Planta}-${row['N° Documento (O/S)']}-${idx}`}
+                        className={
+                          idx % 2 === 0 ? 'bg-slate-900' : 'bg-slate-800/60'
+                        }
+                      >
+                        <td className="px-3 py-2 border-b border-slate-800">
+                          {row.Planta ?? ''}
+                        </td>
+                        <td className="px-3 py-2 border-b border-slate-800">
+                          {row['N° Documento (O/S)'] ??
+                            row['N° Documento O/S'] ??
+                            ''}
+                        </td>
+                        <td className="px-3 py-2 border-b border-slate-800">
+                          {row['Descripción O/S'] ?? ''}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </div>
-    </div>
+    </main>
   );
 }
