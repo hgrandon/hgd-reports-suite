@@ -1,5 +1,5 @@
 {
-  "name": "hgd-reports-suite",
+  "name": "hgdata",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,20 +9,17 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "next": "16.0.8",
-    "papaparse": "^5.5.3",
-    "react": "19.2.1",
-    "react-dom": "19.2.1"
+    "next": "16.1.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
-    "@types/papaparse": "^5.5.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
-    "eslint-config-next": "16.0.8",
+    "eslint-config-next": "16.1.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
