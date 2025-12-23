@@ -22,11 +22,17 @@ function parseLine(line: string): string[] {
 export default function OSPage() {
   const [rows, setRows] = useState<Row[]>([]);
   const [search, setSearch] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string>('');
 
   useEffect(() => {
     async function loadCSV() {
       try {
-        const res = await fetch('/status_os.csv');
+        setErrorMsg('');
+
+        // ✅ AQUÍ ESTÁ EL ARREGLO: tu API real
+        const res = await fetch('/api/status-os', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`No se pudo descargar el CSV (HTTP ${res.status})`);
+
         const text = await res.text();
 
         const lineas = text
@@ -40,17 +46,29 @@ export default function OSPage() {
         setRows(data);
       } catch (err) {
         console.error('Error cargando CSV', err);
+        setErrorMsg('No se pudo descargar el CSV desde la API');
       }
     }
 
     loadCSV();
   }, []);
 
+  if (errorMsg) {
+    return (
+      <main className="min-h-screen bg-slate-950 text-slate-100 p-6">
+        <h1 className="text-xl font-bold mb-4">Consulta Orden de Servicio</h1>
+        <div className="mt-6 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-red-200">
+          {errorMsg}
+        </div>
+      </main>
+    );
+  }
+
   if (!rows.length) {
     return (
       <main className="min-h-screen bg-slate-950 text-slate-100 p-6">
         <h1 className="text-xl font-bold mb-4">Consulta Orden de Servicio</h1>
-        <p>Cargando datos de status_os.csv…</p>
+        <p>Cargando datos desde la API…</p>
       </main>
     );
   }
@@ -58,20 +76,20 @@ export default function OSPage() {
   const headers = rows[0];
   const body = rows.slice(1);
 
-  // Buscar índice de la columna "Planta" y "N° Documento"
-  const idxPlanta =
-    headers.findIndex((h) => h.toLowerCase().includes('planta')) ?? 0;
+  // 🔧 findIndex devuelve -1 si no encuentra, así que manejamos eso bien:
+  const idxPlanta = (() => {
+    const i = headers.findIndex((h) => (h || '').toLowerCase().includes('planta'));
+    return i >= 0 ? i : 0;
+  })();
 
-  const idxDoc =
-    headers.findIndex((h) =>
-      h.toLowerCase().includes('documento')
-    ) ?? 1; // N° Documento
+  const idxDoc = (() => {
+    const i = headers.findIndex((h) => (h || '').toLowerCase().includes('documento'));
+    return i >= 0 ? i : 1;
+  })();
 
   // Filtrar por N° Documento (columna B)
   const filtrado = search
-    ? body.filter((r) =>
-        (r[idxDoc] || '').toLowerCase().includes(search.toLowerCase())
-      )
+    ? body.filter((r) => ((r[idxDoc] || '') + '').toLowerCase().includes(search.toLowerCase()))
     : body;
 
   return (
