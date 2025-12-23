@@ -1,90 +1,120 @@
-// src/app/api/status-os/route.ts
 import { NextResponse } from 'next/server';
 
-/**
- * URL pública del CSV en OneDrive.
- *
- * 👉 Recomendado:
- *    Define STATUS_OS_ONEDRIVE_URL en tu .env.local y en Vercel:
- *
- *    STATUS_OS_ONEDRIVE_URL="https://1drv.ms/x/c/ee59d2f4cd050886/IQBHOENRuHf6SIu6IuP2EDPwAfaqaZA0ElB97miXaPa2pro?download=1"
- *
- * Si la variable no existe, usará el valor por defecto de abajo.
- */
-const FALLBACK_CSV_URL =
-  'https://1drv.ms/x/c/ee59d2f4cd050886/IQBHOENRuHf6SIu6IuP2EDPwAfaqaZA0ElB97miXaPa2pro?download=1';
+const TENANT_ID = process.env.AZURE_TENANT_ID || '';
+const CLIENT_ID = process.env.AZURE_CLIENT_ID || '';
+const CLIENT_SECRET = process.env.AZURE_CLIENT_SECRET || '';
+const SHARE_URL = process.env.STATUS_OS_SHARE_URL || '';
 
-const CSV_PUBLIC_URL =
-  process.env.STATUS_OS_ONEDRIVE_URL && process.env.STATUS_OS_ONEDRIVE_URL.trim().length > 0
-    ? process.env.STATUS_OS_ONEDRIVE_URL.trim()
-    : FALLBACK_CSV_URL;
+function base64UrlEncode(input: string) {
+  // base64url: + -> -, / -> _, sin =
+  return Buffer.from(input, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+async function getAppToken() {
+  const tokenUrl = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
+
+  const body = new URLSearchParams();
+  body.set('client_id', CLIENT_ID);
+  body.set('client_secret', CLIENT_SECRET);
+  body.set('grant_type', 'client_credentials');
+  body.set('scope', 'https://graph.microsoft.com/.default');
+
+  const res = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Token error HTTP ${res.status}: ${t}`);
+  }
+
+  const json = await res.json();
+  return json.access_token as string;
+}
+
+async function getDriveItemFromShareUrl(accessToken: string, shareUrl: string) {
+  // Graph: /shares/{shareId}/driveItem
+  // shareId = "u!" + base64url(shareUrl)
+  const shareId = 'u!' + base64UrlEncode(shareUrl);
+
+  const res = await fetch(`https://graph.microsoft.com/v1.0/shares/${shareId}/driveItem`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`DriveItem error HTTP ${res.status}: ${t}`);
+  }
+
+  return res.json();
+}
+
+async function downloadDriveItemContent(accessToken: string, itemId: string) {
+  // Tip: usando /drive/items/{id}/content funciona si el item viene con parentReference.driveId
+  // pero para lo más seguro usamos el @microsoft.graph.downloadUrl si viene.
+  // Aun así, /content con bearer suele funcionar.
+  const res = await fetch(`https://graph.microsoft.com/v1.0/drive/items/${itemId}/content`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    redirect: 'follow',
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Download error HTTP ${res.status}: ${t}`);
+  }
+
+  return res.text();
+}
 
 export async function GET() {
-  // Pequeña validación por si quedara vacío
-  if (!CSV_PUBLIC_URL) {
-    console.error(
-      '[status-os] CSV_PUBLIC_URL vacío. Revisa la variable STATUS_OS_ONEDRIVE_URL o el fallback.'
-    );
+  // Validaciones
+  if (!TENANT_ID || !CLIENT_ID || !CLIENT_SECRET) {
     return NextResponse.json(
-      { error: 'No hay URL configurada para el CSV de OneDrive.' },
+      { error: 'Faltan variables Azure (TENANT_ID/CLIENT_ID/CLIENT_SECRET).' },
+      { status: 500 }
+    );
+  }
+  if (!SHARE_URL) {
+    return NextResponse.json(
+      { error: 'Falta STATUS_OS_SHARE_URL (link compartido del archivo).' },
       { status: 500 }
     );
   }
 
   try {
-    // Opcional: timeout para evitar quedarse pegado si OneDrive no responde
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000); // 30 segundos
+    const accessToken = await getAppToken();
+    const driveItem = await getDriveItemFromShareUrl(accessToken, SHARE_URL);
 
-    const res = await fetch(CSV_PUBLIC_URL, {
-      // OneDrive suele redirigir al archivo real
-      redirect: 'follow',
-      signal: controller.signal,
-      // Forzamos no cachear en el servidor (tú decides si luego quieres cachear)
-      cache: 'no-store',
-    });
-
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      console.error(
-        '[status-os] Error al descargar CSV:',
-        res.status,
-        res.statusText
-      );
+    const itemId = driveItem?.id as string | undefined;
+    if (!itemId) {
       return NextResponse.json(
-        {
-          error: 'No se pudo descargar el archivo CSV desde OneDrive.',
-          status: res.status,
-          statusText: res.statusText,
-        },
+        { error: 'No se pudo resolver el DriveItem ID desde el link compartido.' },
         { status: 500 }
       );
     }
 
-    const text = await res.text();
+    const csvText = await downloadDriveItemContent(accessToken, itemId);
 
-    // 🔹 Devolvemos el CSV como texto plano
-    return new NextResponse(text, {
+    return new NextResponse(csvText, {
       status: 200,
       headers: {
         'Content-Type': 'text/csv; charset=utf-8',
-        // No cache en el edge/server (para tener siempre la versión nueva)
         'Cache-Control': 'no-store',
       },
     });
-  } catch (error: unknown) {
-    if ((error as any)?.name === 'AbortError') {
-      console.error('[status-os] Timeout al descargar el CSV desde OneDrive');
-      return NextResponse.json(
-        { error: 'Timeout al descargar el CSV desde OneDrive.' },
-        { status: 504 }
-      );
-    }
-
-    console.error('[status-os] Error inesperado en /api/status-os:', error);
+  } catch (e: any) {
+    console.error('[status-os][graph] error:', e?.message || e);
     return NextResponse.json(
-      { error: 'Error interno al descargar el CSV.' },
+      { error: 'Error al descargar el CSV vía Microsoft Graph.', detail: e?.message || String(e) },
       { status: 500 }
     );
   }
