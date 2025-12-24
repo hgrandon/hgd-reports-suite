@@ -4,9 +4,26 @@ import { useEffect, useMemo, useState } from 'react';
 
 type Row = string[];
 
-// separa por espacios múltiples o tabs (formato típico export SAP)
+/**
+ * ✅ Parser robusto para TXT tipo SAP:
+ * - Soporta tabs, múltiples espacios y recortes
+ * - Mantiene filas con distinta cantidad de columnas sin reventar
+ */
 function parseLine(line: string): string[] {
-  return line.trim().split(/\s{2,}|\t+/);
+  return line
+    .replace(/\u00A0/g, ' ') // por si vienen espacios raros (nbsp)
+    .trim()
+    .split(/\t+|\s{2,}/)
+    .map((c) => c.trim());
+}
+
+/**
+ * ✅ Normaliza filas al largo de headers (rellena con "")
+ */
+function normalizeRow(r: Row, len: number): Row {
+  if (r.length === len) return r;
+  if (r.length > len) return r.slice(0, len);
+  return [...r, ...Array.from({ length: len - r.length }, () => '')];
 }
 
 export default function InventarioPage() {
@@ -22,8 +39,14 @@ export default function InventarioPage() {
         setLoading(true);
         setErrorMsg('');
 
-        const res = await fetch('/inventario.txt', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`No se pudo cargar inventario.txt (HTTP ${res.status})`);
+        // ✅ evita caché en browser y en vercel
+        const res = await fetch('/inventario.txt?ts=' + Date.now(), {
+          cache: 'no-store',
+        });
+
+        if (!res.ok) {
+          throw new Error(`No se pudo cargar inventario.txt (HTTP ${res.status})`);
+        }
 
         const text = await res.text();
 
@@ -32,15 +55,27 @@ export default function InventarioPage() {
           .map((l) => l.trimEnd())
           .filter((l) => l.trim().length > 0);
 
+        if (lines.length === 0) {
+          throw new Error('inventario.txt está vacío o no tiene líneas válidas.');
+        }
+
         const parsed = lines.map(parseLine);
 
+        // ✅ headers + body
         const head = parsed[0] || [];
-        const body = parsed.slice(1);
+        const bodyRaw = parsed.slice(1);
+
+        if (head.length === 0) {
+          throw new Error('No se detectaron encabezados en la primera línea del TXT.');
+        }
+
+        // ✅ normaliza filas para que calcen con headers
+        const body = bodyRaw.map((r) => normalizeRow(r, head.length));
 
         setHeaders(head);
         setRows(body);
 
-        // por defecto: primeras 6 columnas (si existen)
+        // ✅ por defecto: primeras 6 columnas (si existen)
         setSelectedCols(head.map((_, i) => i).slice(0, Math.min(6, head.length)));
       } catch (e: any) {
         setErrorMsg(e?.message || 'Error cargando inventario');
@@ -53,9 +88,14 @@ export default function InventarioPage() {
   }, []);
 
   function toggleColumn(index: number) {
-    setSelectedCols((prev) =>
-      prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]
-    );
+    setSelectedCols((prev) => {
+      const next = prev.includes(index)
+        ? prev.filter((i) => i !== index)
+        : [...prev, index];
+
+      // ✅ mantener orden ascendente (mejor UX)
+      return next.sort((a, b) => a - b);
+    });
   }
 
   const selectedHeaders = useMemo(
@@ -65,7 +105,6 @@ export default function InventarioPage() {
 
   return (
     <main className="min-h-screen p-5 bg-[#E9EEF3] text-[#1B1F23]">
-      {/* “Estilo SAP” (gris azulado + amarillo suave de selección) */}
       <div className="max-w-7xl mx-auto">
         {/* Header tipo SAP */}
         <div className="rounded-md border border-[#B7C2CC] bg-[#DDE6EE] shadow-sm">
@@ -94,18 +133,23 @@ export default function InventarioPage() {
           </div>
         )}
 
-        {errorMsg && (
+        {!loading && errorMsg && (
           <div className="mt-4 rounded-md border border-[#D9A3A3] bg-[#FFF2F2] px-4 py-3">
             <div className="text-[13px] text-[#8A1F1F] font-semibold">
               Error cargando inventario
             </div>
             <div className="text-[12px] text-[#8A1F1F] mt-1">{errorMsg}</div>
+
+            {/* ✅ Tip rápido de diagnóstico */}
+            <div className="text-[12px] text-[#8A1F1F] mt-2">
+              Prueba directo: <span className="font-semibold">/inventario.txt</span>
+            </div>
           </div>
         )}
 
         {!loading && !errorMsg && (
           <>
-            {/* Panel selector (tipo “lista” SAP) */}
+            {/* Panel selector */}
             <div className="mt-4 rounded-md border border-[#B7C2CC] bg-white shadow-sm">
               <div className="px-4 py-2 border-b border-[#D0DAE4] bg-[#F3F7FB]">
                 <div className="text-[13px] font-semibold text-[#2B3A49]">
@@ -124,7 +168,7 @@ export default function InventarioPage() {
                           'flex items-center gap-2 rounded-md border px-3 py-2 text-[12px] cursor-pointer select-none',
                           'transition-colors',
                           checked
-                            ? 'bg-[#FFF2B3] border-[#D6B656] text-[#2B2B2B]' // amarillo SAP selección
+                            ? 'bg-[#FFF2B3] border-[#D6B656] text-[#2B2B2B]'
                             : 'bg-white border-[#D0DAE4] hover:bg-[#F3F7FB] text-[#2B3A49]',
                         ].join(' ')}
                       >
@@ -144,7 +188,7 @@ export default function InventarioPage() {
               </div>
             </div>
 
-            {/* Tabla estilo SAP */}
+            {/* Tabla */}
             <div className="mt-4 rounded-md border border-[#B7C2CC] bg-white shadow-sm overflow-hidden">
               <div className="overflow-auto">
                 <table className="w-full text-[12px] border-collapse">
@@ -166,8 +210,8 @@ export default function InventarioPage() {
                       <tr
                         key={idx}
                         className={[
-                          idx % 2 === 0 ? 'bg-white' : 'bg-[#F7FAFD]', // zebra suave
-                          'hover:bg-[#FFF2B3]/60', // hover amarillo suave
+                          idx % 2 === 0 ? 'bg-white' : 'bg-[#F7FAFD]',
+                          'hover:bg-[#FFF2B3]/60',
                         ].join(' ')}
                       >
                         {selectedCols.map((i) => (
